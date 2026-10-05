@@ -83,18 +83,41 @@ spark.sql(f'''
 
 # COMMAND ----------
 
-ihr_psr_chnls=spark.sql(f'''
-                    select i.salesinvoiceno, i.InitiativeCode, i.DistCode, p.Retailer_Code, 
-                    CASE WHEN i.channel is not null then upper(i.channel) ELSE upper(sd.local_channel_name) end as ihr_Channel,
-                    CASE WHEN p.Transaction_Customer_Type is not null then upper(p.Transaction_Customer_Type) ELSE upper(p.Customer_Type) end as psr_SubChannel,
-                    i.BranchCode,i.ShipDate 
-                    from ihr i 
-                    left join cdl_india_data_prod.india_distributordata_refined.tblbasetrn_salesdetails p on i.salesinvoiceno=p.InvCode
-                    left join stg.indirect_ship_day_fct_new_touchless_promo sd on sd.invoice_number = i.salesinvoiceno
-                    where i.ShipDate between '{start_date_value}' and '{end_date_value}' 
-                    ''')
+# ihr_psr_chnls=spark.sql(f'''
+#                     select i.salesinvoiceno, i.InitiativeCode, i.DistCode, p.Retailer_Code, 
+#                     CASE WHEN i.channel is not null then upper(i.channel) ELSE upper(sd.local_channel_name) end as ihr_Channel,
+#                     CASE WHEN p.Transaction_Customer_Type is not null then upper(p.Transaction_Customer_Type) ELSE upper(p.Customer_Type) end as psr_SubChannel,
+#                     i.BranchCode,i.ShipDate 
+#                     from ihr i 
+#                     left join cdl_india_data_prod.india_distributordata_refined.tblbasetrn_salesdetails p on i.salesinvoiceno=p.InvCode
+#                     left join stg.indirect_ship_day_fct_new_touchless_promo sd on sd.invoice_number = i.salesinvoiceno
+#                     where i.ShipDate between '{start_date_value}' and '{end_date_value}' 
+#                     ''')
 
-ihr_psr_chnls.createOrReplaceTempView("ihr_psr_chnls")
+# ihr_psr_chnls.createOrReplaceTempView("ihr_psr_chnls")
+
+
+sr_subchannel=spark.sql(f"""
+select DocNumber, upper(SubChannelName) as SubChannelName
+from cdl_india_data_prod.india_distributordata_refined.tblrefinedview_salesdetails
+where DocNumber in (select distinct salesinvoiceno from ihr where ShipDate between '{start_date_value}' and '{end_date_value}')
+""")
+sr_subchannel.createOrReplaceTempView("sr_subchannel")
+
+ihr_psr_chnls=spark.sql(f"""
+select i.salesinvoiceno, i.InitiativeCode, i.DistCode, p.Retailer_Code,
+       case when i.channel is not null then upper(i.channel) else upper(sd.local_channel_name) end as ihr_Channel,
+       case when p.Transaction_Customer_Type is not null then upper(p.Transaction_Customer_Type)
+            else coalesce(upper(p.Customer_Type), sr.SubChannelName) end as psr_SubChannel,
+       i.BranchCode, i.ShipDate
+from ihr i
+left join cdl_india_data_prod.india_distributordata_refined.tblbasetrn_salesdetails p on i.salesinvoiceno=p.InvCode
+left join stg.indirect_ship_day_fct_new_touchless_promo sd on sd.invoice_number=i.salesinvoiceno
+left join sr_subchannel sr on sr.DocNumber=i.salesinvoiceno
+where i.ShipDate between '{start_date_value}' and '{end_date_value}'
+""")
+
+ihr_psr_chnls.createOrReplaceTempView("ihr_psr_chnls")z
 
 # COMMAND ----------
 
