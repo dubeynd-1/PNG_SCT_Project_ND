@@ -97,27 +97,41 @@ spark.sql(f'''
 # ihr_psr_chnls.createOrReplaceTempView("ihr_psr_chnls")
 
 
-sr_subchannel=spark.sql(f"""
-select DocNumber, upper(SubChannelName) as SubChannelName
+# One row per invoice, date-filtered, nulls removed
+sr_subchannel = spark.sql(f"""
+select DocNumber, max(upper(SubChannelName)) as SubChannelName
 from cdl_india_data_prod.india_distributordata_refined.tblrefinedview_salesdetails
-where DocNumber in (select distinct salesinvoiceno from ihr where ShipDate between '{start_date_value}' and '{end_date_value}')
+where date >= '{start_date_value}' and date <= '{end_date_value}'
+  and SubChannelName is not null and trim(SubChannelName) <> ''
+group by DocNumber
 """)
 sr_subchannel.createOrReplaceTempView("sr_subchannel")
 
-ihr_psr_chnls=spark.sql(f"""
+# One row per invoice from PSR as well (avoids line-level fan-out)
+psr_inv = spark.sql(f"""
+select InvCode, max(Retailer_Code) as Retailer_Code,
+       max(upper(Transaction_Customer_Type)) as Transaction_Customer_Type,
+       max(upper(Customer_Type)) as Customer_Type
+from cdl_india_data_prod.india_distributordata_refined.tblbasetrn_salesdetails
+where InvDate >= '{start_date_value}' and InvDate <= '{end_date_value}'
+group by InvCode
+""")
+psr_inv.createOrReplaceTempView("psr_inv")
+
+ihr_psr_chnls = spark.sql(f"""
 select i.salesinvoiceno, i.InitiativeCode, i.DistCode, p.Retailer_Code,
-       case when i.channel is not null then upper(i.channel) else upper(sd.local_channel_name) end as ihr_Channel,
-       case when p.Transaction_Customer_Type is not null then upper(p.Transaction_Customer_Type)
-            else coalesce(upper(p.Customer_Type), sr.SubChannelName) end as psr_SubChannel,
+       coalesce(upper(i.channel), upper(sd.local_channel_name)) as ihr_Channel,
+       coalesce(p.Transaction_Customer_Type, p.Customer_Type, sr.SubChannelName) as psr_SubChannel,
        i.BranchCode, i.ShipDate
 from ihr i
-left join cdl_india_data_prod.india_distributordata_refined.tblbasetrn_salesdetails p on i.salesinvoiceno=p.InvCode
-left join stg.indirect_ship_day_fct_new_touchless_promo sd on sd.invoice_number=i.salesinvoiceno
-left join sr_subchannel sr on sr.DocNumber=i.salesinvoiceno
+left join psr_inv p        on i.salesinvoiceno = p.InvCode
+left join stg.indirect_ship_day_fct_new_touchless_promo sd on sd.invoice_number = i.salesinvoiceno
+left join sr_subchannel sr on sr.DocNumber = i.salesinvoiceno
 where i.ShipDate between '{start_date_value}' and '{end_date_value}'
-""")
+""").persist()
 
-ihr_psr_chnls.createOrReplaceTempView("ihr_psr_chnls")z
+ihr_psr_chnls.count()   # build the cached copy once
+ihr_psr_chnls.createOrReplaceTempView("ihr_psr_chnls")
 
 # COMMAND ----------
 
